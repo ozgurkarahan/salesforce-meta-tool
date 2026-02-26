@@ -1,20 +1,12 @@
-# CLAUDE.md
+# AGENT.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to code agents when working with this repository.
 
 ## Project Overview
 
 **Salesforce MCP Tool** — standalone deployment of a Salesforce MCP server with identity propagation, deployed via Azure Developer CLI (`azd`) and Bicep. Extracted from the multi-tool `secu-propagate-identity` PoC to be independently deployable.
 
 **Architecture:** Chat App (FastAPI + MSAL.js) → AI Foundry Agent → APIM (JWT validation) → Salesforce MCP Server (FastMCP) → Salesforce APIs
-
-## Reference Documents
-
-| Document | Contents |
-|---|---|
-| [`.claude/docs/project-reference.md`](.claude/docs/project-reference.md) | All project-specific technical details — IaC principles, SDK notes, Salesforce MCP, auth flows, scripts, deployment caveats |
-| [`.claude/docs/lessons-learned.md`](.claude/docs/lessons-learned.md) | Debugging history, project-specific lessons, root cause analyses |
-| [`.claude/docs/workflow-rules.md`](.claude/docs/workflow-rules.md) | Workflow rules, self-improvement loop, verification standards, task management process |
 
 ## Development Quick Reference
 
