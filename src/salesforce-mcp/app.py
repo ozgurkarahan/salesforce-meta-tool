@@ -8,6 +8,8 @@ import json
 import logging
 import os
 
+import httpx
+
 # --- Azure Monitor OpenTelemetry ---
 _conn_str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
 if _conn_str:
@@ -66,10 +68,40 @@ The Id field also works for upsert.
 - Field values use API field name as key: {"Name": "Acme", "Industry": "Technology"}.
 - Record IDs are 18-character alphanumeric strings.
 - Errors return {"success": false, "error": "..."} — follow the guidance in the message.
+
+## Error handling
+- Salesforce errors return {"success": false, "errorCode": "...", "message": "..."}.
+- INSUFFICIENT_ACCESS = user lacks permission. Explain clearly what permission is missing.
+- INVALID_FIELD = bad field name. Suggest running describe_object.
+- When a tool returns an error, explain the reason to the user in plain language.
 """,
     host="0.0.0.0",
     port=port,
 )
+
+
+def _sf_error_response(e: httpx.HTTPStatusError) -> str:
+    """Extract Salesforce error details from an HTTP error response."""
+    status = e.response.status_code
+    try:
+        body = e.response.json()
+        if isinstance(body, list) and body:
+            sf_err = body[0]
+            return json.dumps({
+                "success": False,
+                "errorCode": sf_err.get("errorCode", "UNKNOWN"),
+                "message": sf_err.get("message", str(e)),
+                "fields": sf_err.get("fields", []),
+                "httpStatus": status,
+            })
+    except Exception:
+        pass
+    return json.dumps({
+        "success": False,
+        "errorCode": "HTTP_ERROR",
+        "message": str(e),
+        "httpStatus": status,
+    })
 
 
 def _clean_attributes(obj):
@@ -98,7 +130,10 @@ async def list_objects(filter: str | None = None) -> str:
     Returns:
         JSON array (max 100) of objects with name, label, queryable, createable, updateable, deletable flags.
     """
-    objects = await sf.describe_global()
+    try:
+        objects = await sf.describe_global()
+    except httpx.HTTPStatusError as e:
+        return _sf_error_response(e)
 
     if filter:
         f = filter.lower()
@@ -125,7 +160,10 @@ async def describe_object(object_name: str) -> str:
         JSON with object name, label, fields (name, label, type, required, externalId, picklistValues, referenceTo),
         and child relationships.
     """
-    result = await sf.describe_object(object_name)
+    try:
+        result = await sf.describe_object(object_name)
+    except httpx.HTTPStatusError as e:
+        return _sf_error_response(e)
     return json.dumps(result, indent=2)
 
 
@@ -153,13 +191,16 @@ async def soql_query(query: str, max_records: int = 10000) -> str:
         JSON with totalSize, records array, and done flag. done is false if results were truncated by max_records.
     """
     max_records = min(max_records, 50000)
-    result = await sf.query(query)
-    records = result.get("records", [])
-    total_size = result.get("totalSize", len(records))
+    try:
+        result = await sf.query(query)
+        records = result.get("records", [])
+        total_size = result.get("totalSize", len(records))
 
-    while not result.get("done") and result.get("nextRecordsUrl") and len(records) < max_records:
-        result = await sf.query_more(result["nextRecordsUrl"])
-        records.extend(result.get("records", []))
+        while not result.get("done") and result.get("nextRecordsUrl") and len(records) < max_records:
+            result = await sf.query_more(result["nextRecordsUrl"])
+            records.extend(result.get("records", []))
+    except httpx.HTTPStatusError as e:
+        return _sf_error_response(e)
 
     _clean_attributes(records)
 
@@ -208,7 +249,10 @@ async def search_records(
         sosl += f" RETURNING {objects}"
     sosl += f" LIMIT {limit}"
 
-    result = await sf.search(sosl)
+    try:
+        result = await sf.search(sosl)
+    except httpx.HTTPStatusError as e:
+        return _sf_error_response(e)
     records = result.get("searchRecords", [])
     _clean_attributes(records)
 
@@ -272,55 +316,58 @@ async def write_record(
             "error": "external_id_field is required for 'upsert' operation.",
         })
 
-    # Validate field names for operations that send data
-    desc = None
-    if op in ("create", "update", "upsert") and field_values:
-        desc = await sf.describe_object(object_name)
-        valid_fields = {f["name"] for f in desc["fields"]}
-        invalid = set(field_values.keys()) - valid_fields
-        if invalid:
-            return json.dumps({
-                "success": False,
-                "error": f"Invalid field names: {', '.join(sorted(invalid))}. Use describe_object to find valid field names.",
-            })
-
-    # Validate external ID field for upsert
-    if op == "upsert":
-        if not desc:
+    try:
+        # Validate field names for operations that send data
+        desc = None
+        if op in ("create", "update", "upsert") and field_values:
             desc = await sf.describe_object(object_name)
-        ext_field_meta = next(
-            (f for f in desc["fields"] if f["name"] == external_id_field), None
-        )
-        if not ext_field_meta:
-            return json.dumps({
-                "success": False,
-                "error": f"Field '{external_id_field}' not found on {object_name}.",
-            })
-        if not ext_field_meta.get("externalId") and ext_field_meta.get("type") != "id":
-            return json.dumps({
-                "success": False,
-                "error": f"Field '{external_id_field}' is not marked as an External ID on {object_name}. "
-                         "Use describe_object to find fields with externalId: true.",
-            })
+            valid_fields = {f["name"] for f in desc["fields"]}
+            invalid = set(field_values.keys()) - valid_fields
+            if invalid:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Invalid field names: {', '.join(sorted(invalid))}. Use describe_object to find valid field names.",
+                })
 
-    if op == "create":
-        result = await sf.create_record(object_name, field_values)
-    elif op == "update":
-        result = await sf.update_record(object_name, record_id, field_values)
-    elif op == "upsert":
-        external_id_value = field_values.get(external_id_field, "")
-        if not external_id_value:
-            return json.dumps({
-                "success": False,
-                "error": f"field_values must include a value for the external ID field '{external_id_field}'.",
-            })
-        # Don't send the external ID field in the body — it's in the URL
-        upsert_fields = {k: v for k, v in field_values.items() if k != external_id_field}
-        result = await sf.upsert_record(
-            object_name, external_id_field, str(external_id_value), upsert_fields
-        )
-    else:  # delete
-        result = await sf.delete_record(object_name, record_id)
+        # Validate external ID field for upsert
+        if op == "upsert":
+            if not desc:
+                desc = await sf.describe_object(object_name)
+            ext_field_meta = next(
+                (f for f in desc["fields"] if f["name"] == external_id_field), None
+            )
+            if not ext_field_meta:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Field '{external_id_field}' not found on {object_name}.",
+                })
+            if not ext_field_meta.get("externalId") and ext_field_meta.get("type") != "id":
+                return json.dumps({
+                    "success": False,
+                    "error": f"Field '{external_id_field}' is not marked as an External ID on {object_name}. "
+                             "Use describe_object to find fields with externalId: true.",
+                })
+
+        if op == "create":
+            result = await sf.create_record(object_name, field_values)
+        elif op == "update":
+            result = await sf.update_record(object_name, record_id, field_values)
+        elif op == "upsert":
+            external_id_value = field_values.get(external_id_field, "")
+            if not external_id_value:
+                return json.dumps({
+                    "success": False,
+                    "error": f"field_values must include a value for the external ID field '{external_id_field}'.",
+                })
+            # Don't send the external ID field in the body — it's in the URL
+            upsert_fields = {k: v for k, v in field_values.items() if k != external_id_field}
+            result = await sf.upsert_record(
+                object_name, external_id_field, str(external_id_value), upsert_fields
+            )
+        else:  # delete
+            result = await sf.delete_record(object_name, record_id)
+    except httpx.HTTPStatusError as e:
+        return _sf_error_response(e)
 
     return json.dumps(result, indent=2)
 
@@ -362,7 +409,10 @@ async def process_approval(
     if comments:
         request["comments"] = comments
 
-    result = await sf.process_approval([request])
+    try:
+        result = await sf.process_approval([request])
+    except httpx.HTTPStatusError as e:
+        return _sf_error_response(e)
 
     # Flatten single-request response
     items = result.get("processResults", result.get("results", []))
