@@ -1,11 +1,10 @@
 """Post-provision hook: create Entra app + configure OAuth + create Foundry agent.
 
-After Bicep deploys Azure resources and the OAuth connection (with placeholders),
-this hook:
+After Bicep deploys Azure resources and the OAuth connection, this hook:
 1. Creates Chat App Entra app registration (az CLI — delegated permissions)
 2. Creates the Foundry agent with Salesforce MCP tool
 3. Updates Chat App Container App env vars
-4. Updates the SF OAuth connection with real credentials
+4. Recreates SF OAuth connection via DELETE+PUT (triggers ApiHub connector registration)
 5. Updates APIM SfInstanceUrl Named Value
 
 Uses az CLI for Entra ops because the Graph Bicep extension requires
@@ -198,8 +197,11 @@ def update_chat_app_settings():
 def update_sf_oauth_connection():
     """Recreate the Salesforce OAuth connection with real credentials via ARM REST.
 
-    Same DELETE + PUT pattern as the source project. Reads
-    SF_CONNECTED_APP_CLIENT_ID and SF_CONNECTED_APP_CLIENT_SECRET from env.
+    Bicep-created connections do NOT register the ApiHub connector that Foundry
+    needs for interactive OAuth consent. The fix is to DELETE the Bicep-created
+    connection and PUT a fresh one via ARM REST, which triggers ApiHub setup.
+
+    Reads SF_CONNECTED_APP_CLIENT_ID and SF_CONNECTED_APP_CLIENT_SECRET from env.
     Skips gracefully if not set.
     """
     client_id = os.environ.get("SF_CONNECTED_APP_CLIENT_ID", "")
@@ -480,12 +482,15 @@ def main():
         traceback.print_exc()
 
     # Step 4: Salesforce OAuth connection
-    # NOTE: Bicep now deploys the connection with real SF credentials directly
-    # (from azd env vars SF_CONNECTED_APP_CLIENT_ID / SF_CONNECTED_APP_CLIENT_SECRET).
-    # The DELETE+PUT pattern is no longer needed and was causing issues — connections
-    # recreated via az rest got isDefault=true which broke ApiHub consent persistence.
-    print("\n--- Step 4: Salesforce OAuth connection (managed by Bicep) ---")
-    _print_sf_apihub_redirect_uri(os.environ.get("SF_OAUTH_CONNECTION_NAME", "salesforce-oauth"))
+    # Bicep-created connections do NOT register the ApiHub connector that Foundry
+    # needs for interactive OAuth consent. DELETE+PUT via ARM REST triggers ApiHub setup.
+    # (Matches secu-propagate-identity pattern — confirmed working 2026-02-25.)
+    print("\n--- Step 4: Salesforce OAuth connection ---")
+    try:
+        update_sf_oauth_connection()
+    except Exception as e:
+        print(f"\nWARNING: SF OAuth connection update failed (non-fatal): {e}")
+        traceback.print_exc()
 
     # Step 5: Update APIM SfInstanceUrl Named Value
     print("\n--- Step 5: Update APIM SfInstanceUrl Named Value ---")

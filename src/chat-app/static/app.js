@@ -183,10 +183,14 @@ function handleResponse(data) {
     } else if (data.approval_required) {
         addSystemMessage('Agent requesting tool access — auto-approving...');
         autoApprove(data.approval_ids.map(a => a.id));
+    } else if (awaitingPostConsentRetry && pendingRetryMessage && postConsentRetryCount < 2) {
+        // Consent chain completed — agent returned text without calling tools.
+        // Re-send the original query so the agent uses the now-authorized MCP tools.
+        awaitingPostConsentRetry = false;
+        postConsentRetryCount++;
+        retryOriginalQuery();
     } else if (data.text) {
         addMessage('assistant', data.text);
-        awaitingPostConsentRetry = false;
-        postConsentRetryCount = 0;
     } else {
         addSystemMessage('Agent returned no text response.');
     }

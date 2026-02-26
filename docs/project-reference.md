@@ -55,9 +55,10 @@ Always prioritize Bicep for Azure resource creation. The post-provision hook (`h
 - SF Connected App needs ApiHub redirect URI in callback URLs
 - Required env vars: `SF_CONNECTED_APP_CLIENT_ID`, `SF_CONNECTED_APP_CLIENT_SECRET`, `SF_INSTANCE_URL`
 - Bicep deploys the connection with real SF credentials from azd env vars (no placeholders)
-- **IMPORTANT:** ApiHub registers the connector with `identityProvider: oauth2pkce` (read-only). ApiHub always sends `code_challenge` to SF. If SF PKCE validation fails, the ApiHub browser consent flow breaks.
-- **WORKAROUND:** After `azd up`, run `python scripts/grant-sf-mcp-consent.py` to do a direct OAuth flow (no PKCE) and store the refresh token in the ARM connection via DELETE+PUT. ApiHub then uses this refresh token without needing PKCE consent.
-- SF tokens expire after 2h. Chat app has a "Re-authenticate" button that DELETE+PUTs the connection.
+- **IMPORTANT:** Bicep-created connections do NOT register the ApiHub connector. The postprovision hook DELETE+PUTs the connection via ARM REST to trigger ApiHub setup.
+- After `azd up` + postprovision, the first agent call triggers `oauth_consent_request` — user completes the native ApiHub PKCE consent flow in the browser to authorize Salesforce access. This works correctly.
+- **Optional fallback:** `python scripts/grant-sf-mcp-consent.py` does a direct OAuth flow (no PKCE) and stores the refresh token via DELETE+PUT. Useful for headless/automated setups.
+- SF tokens expire after 2h. Chat app's "Re-authenticate" button DELETE+PUTs the connection, triggering a fresh consent flow on the next request.
 
 ### Chat App
 

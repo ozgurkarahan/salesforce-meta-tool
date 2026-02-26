@@ -10,8 +10,8 @@
 // ignore — same pattern as mcp-oauth-connection.bicep.
 //
 // IMPORTANT: Connection MUST use category 'RemoteTool' + group 'GenericProtocol'.
-// Bicep creates the connection with real credentials from azd env variables.
-// The postprovision hook no longer needs to DELETE+PUT this connection.
+// IMPORTANT: Bicep-created connections do NOT register the ApiHub connector —
+// postprovision hook must DELETE and PUT via ARM REST to trigger ApiHub setup.
 // ============================================================================
 
 @description('Name of the Cognitive Services account')
