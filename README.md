@@ -1,5 +1,9 @@
 # Salesforce Meta-Tool: The Billion-Dollar Agent Loop Applied to Enterprise
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![azd compatible](https://img.shields.io/badge/azd-compatible-blue.svg)](https://learn.microsoft.com/azure/developer/azure-developer-cli/)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+
 > **6 tools. ~200 lines of logic. The entire Salesforce platform.**
 >
 > This project is a companion to [The Billion-Dollar Agent Loop](https://www.linkedin.com/pulse/billion-dollar-agent-loop-ozgur-karahan-fszae/) — a concrete implementation of domain-scoped MCP servers for enterprise AI agents, with end-to-end identity propagation.
@@ -46,43 +50,50 @@ Our answer: **the agent inherits the user's identity.**
 
 The user's Salesforce OAuth token flows through every layer — untouched, unescalated. The MCP server never stores tokens. It passes them through. The Salesforce API enforces the same CRUD permissions, field-level security, sharing rules, and approval workflows that apply when the user logs into Salesforce directly.
 
-**The agent can only do what the user can do.** Not more. Not less. Not different.
-
-This is what makes the meta-tool pattern safe for enterprise: the power comes from the model's ability to compose operations, not from elevated access. A sales rep's agent can query their own accounts and create opportunities — but can't access other reps' pipeline, modify system fields, or bypass approval workflows. The security boundary isn't the agent. It's Salesforce itself.
+> [!WARNING]
+> **Without identity propagation**, the agent connects via a service account with admin access — it sees ALL data, can modify ANYTHING, and bypasses sharing rules. This project ensures **the agent can only do what the user can do.** Not more. Not less. Not different.
 
 ## The Architecture
 
+```mermaid
+flowchart LR
+    Browser["Browser\nMSAL.js"]
+    ChatApp["Chat App\nFastAPI"]
+    Agent["AI Foundry Agent\ngpt-4o + MCP tools"]
+    APIM["APIM Gateway\nvalidate-jwt\nRFC 9728 PRM"]
+    MCP["Salesforce MCP\n6 tools · FastMCP\nbearer passthrough"]
+    SF["Salesforce\nREST API"]
+
+    Browser -->|"Azure AD\ntoken"| ChatApp
+    ChatApp -->|"UserToken-\nCredential"| Agent
+    Agent -->|"MCP\nprotocol"| APIM
+    APIM -->|"SF bearer\ntoken"| MCP
+    MCP -->|"user's SF\ntoken"| SF
+
+    style Browser fill:#4A90D9,color:#fff
+    style ChatApp fill:#7B68EE,color:#fff
+    style Agent fill:#9370DB,color:#fff
+    style APIM fill:#20B2AA,color:#fff
+    style MCP fill:#FF8C00,color:#fff
+    style SF fill:#00CED1,color:#fff
 ```
-                    ┌─────────────────────────────────────────────────┐
-                    │                Azure                            │
-                    │                                                 │
-┌──────────┐       │  ┌───────────┐    ┌──────────────────────────┐  │
-│  Browser  │──────│─▶│ Chat App  │───▶│  AI Foundry Agent        │  │
-│  MSAL.js  │      │  │ (FastAPI) │    │  "salesforce-assistant"  │  │
-└──────────┘       │  └───────────┘    │  model: gpt-4o           │  │
-                   │                   │  tools: [salesforce_mcp]  │  │
-                   │                   └───────────┬──────────────┘  │
-                   │                               │ MCP protocol    │
-                   │                   ┌───────────▼──────────────┐  │
-                   │                   │  APIM Gateway            │  │
-                   │                   │  validate-jwt (SF OIDC)  │  │
-                   │                   │  RFC 9728 PRM            │  │
-                   │                   └───────────┬──────────────┘  │
-                   │                               │ bearer token    │
-                   │                   ┌───────────▼──────────────┐  │
-                   │                   │  Salesforce MCP Server   │  │
-                   │                   │  6 tools, ~200 lines     │  │
-                   │                   │  FastMCP + httpx          │  │
-                   │                   └───────────┬──────────────┘  │
-                   │                               │                 │
-                   └───────────────────────────────│─────────────────┘
-                                                   │ user's SF token
-                                       ┌───────────▼──────────────┐
-                                       │  Salesforce REST API     │
-                                       │  enforces: CRUD, FLS,    │
-                                       │  sharing, approvals      │
-                                       └──────────────────────────┘
+
+> [!NOTE]
+> The MCP server is **stateless** — it never stores, caches, or refreshes tokens. The bearer token middleware extracts the token from the request and passes it directly to the Salesforce REST API. This is the entire identity propagation code:
+
+```python
+class BearerTokenMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        auth = request.headers.get("authorization", "")
+        token = auth[7:] if auth.lower().startswith("bearer ") else None
+        tok = _request_token.set(token)
+        try:
+            return await call_next(request)
+        finally:
+            _request_token.reset(tok)
 ```
+
+Seven lines. That's the security boundary.
 
 ## The 6 Tools — 1,235 Tokens for All of Salesforce
 
@@ -168,35 +179,29 @@ User A (sales rep) → Agent → User A's token → Salesforce
 7. **MCP server** receives the bearer token via middleware, passes it directly to Salesforce REST API
 8. **Salesforce** enforces permissions based on the authenticated user's profile
 
-The MCP server is stateless. It never stores, caches, or refreshes tokens. The bearer token middleware extracts the token from the request and sets it as a context variable — the Salesforce client uses it directly. This is the entire identity propagation code:
-
-```python
-class BearerTokenMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        auth = request.headers.get("authorization", "")
-        token = auth[7:] if auth.lower().startswith("bearer ") else None
-        tok = _request_token.set(token)
-        try:
-            return await call_next(request)
-        finally:
-            _request_token.reset(tok)
-```
-
-Seven lines. That's the security boundary.
+See [`docs/reauth-consent-flow.md`](docs/reauth-consent-flow.md) for a detailed chronological trace of the full OAuth + PKCE consent sequence.
 
 ## Quick Start
 
 ### Prerequisites
-- Azure subscription with Azure Developer CLI (`azd`)
-- Salesforce org with a Connected App (OAuth2 + PKCE)
-- Python 3.11+
+
+| Requirement | Version | Link |
+|---|---|---|
+| Azure subscription | — | [Free trial](https://azure.microsoft.com/free/) |
+| Azure Developer CLI | 1.5+ | [Install azd](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) |
+| Python | 3.11+ | [python.org](https://www.python.org/) |
+| Docker Desktop | — | [docker.com](https://www.docker.com/products/docker-desktop/) |
+| Salesforce org | Developer or Sandbox | [developer.salesforce.com](https://developer.salesforce.com/signup) |
+
+> [!IMPORTANT]
+> You need a **Salesforce Connected App** (External Client Application) configured for OAuth2 with PKCE. See [Setting Up Salesforce](#setting-up-salesforce) below if you're starting from scratch.
 
 ### Deploy
 
 ```bash
 # Clone and configure
-git clone <this-repo>
-cd meta-tool-salesforce
+git clone https://github.com/ozgurkarahan/salesforce-meta-tool.git
+cd salesforce-meta-tool
 
 # Set Salesforce credentials
 azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
@@ -207,25 +212,75 @@ azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
 azd up
 ```
 
-`azd up` deploys the full stack: Container Apps Environment, APIM Gateway, AI Foundry project, Chat App, Salesforce MCP server, OAuth connections, and the Foundry agent — all via Bicep.
+> [!NOTE]
+> `azd up` deploys the full stack: Container Apps Environment, APIM Gateway, AI Foundry project, Chat App, Salesforce MCP server, OAuth connections, and the Foundry agent — all via Bicep. First deployment takes ~15 minutes.
 
-### Post-deployment
+### Environment Variables
 
-```bash
-# Configure SF Connected App callback URL
-python scripts/configure-sf-connected-app.py
+| Variable | Required | Description |
+|---|---|---|
+| `SF_INSTANCE_URL` | Yes | Your Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
+| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
+| `SF_CONNECTED_APP_CLIENT_SECRET` | Yes | Consumer Secret from the Salesforce Connected App |
+| `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid "Project not found" errors (default: empty) |
+| `AZURE_LOCATION` | No | Azure region (default: `swedencentral`, set during `azd init`) |
 
-# Grant OAuth consent for the SF MCP connection
-python scripts/grant-sf-mcp-consent.py
+## Setting Up Salesforce
 
-# Verify end-to-end identity propagation
-python scripts/test-agent-oauth.py
-```
+If you're starting from a **new Salesforce Developer org**, follow these steps:
+
+1. **Sign up** for a free Developer org at [developer.salesforce.com/signup](https://developer.salesforce.com/signup)
+
+2. **Create an External Client App** in Salesforce Setup:
+   - Navigate to **Setup → App Manager → New Connected App**
+   - Enable **OAuth Settings**
+   - Add OAuth scopes: `api`, `refresh_token`
+   - Leave the Callback URL empty for now (the configure script adds it)
+   - Save, then copy the **Consumer Key** and **Consumer Secret**
+
+3. **Set the credentials** in your azd environment:
+   ```bash
+   azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
+   azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
+   azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
+   ```
+
+4. **Deploy** with `azd up`
+
+5. **Configure the callback URL** — adds the ApiHub redirect URI to your Connected App:
+   ```bash
+   python scripts/configure-sf-connected-app.py
+   ```
+
+6. **Send your first message** in the Chat App — this triggers the OAuth consent flow. Authenticate with Salesforce when prompted, and the agent will automatically retry your query.
+
+> [!NOTE]
+> The Connected App's Consumer Key is **not** retrievable via API — you must copy it from Salesforce Setup manually.
+
+## Post-Deployment
+
+After `azd up` completes:
+
+1. **Configure the callback URL** — adds the ApiHub redirect URI to your Salesforce Connected App's allowed callbacks:
+   ```bash
+   python scripts/configure-sf-connected-app.py
+   ```
+
+2. **Open the Chat App** — the URL is printed at the end of `azd up`. Sign in with your Azure AD account.
+
+3. **Send a message** (e.g., "Show me my Salesforce accounts"). On first use, the agent triggers an OAuth consent flow — click the consent link, authenticate with Salesforce, and the agent automatically retries your query.
+
+4. **(Optional) Headless consent** — for automated or CI environments where browser consent is impractical:
+   ```bash
+   python scripts/grant-sf-mcp-consent.py
+   ```
+
+See [`docs/reauth-consent-flow.md`](docs/reauth-consent-flow.md) for the full trace of the consent + re-authentication sequence.
 
 ## Project Structure
 
 ```
-meta-tool-salesforce/
+salesforce-meta-tool/
 ├── azure.yaml                    # azd project: 2 services (chat-app, salesforce-mcp)
 ├── src/
 │   ├── salesforce-mcp/
@@ -239,8 +294,19 @@ meta-tool-salesforce/
 │   └── modules/                  # Modular Bicep (APIM, Container Apps, AI Foundry, ...)
 ├── hooks/
 │   └── postprovision.py          # Creates Entra app + Foundry agent + OAuth connections
-└── scripts/                      # Setup, consent, and test scripts
+├── scripts/                      # Setup, consent, and test scripts
+└── docs/                         # Reauth flow documentation + diagrams
 ```
+
+### Scripts
+
+| Script | Purpose |
+|---|---|
+| `configure-sf-connected-app.py` | Adds ApiHub redirect URI to SF Connected App callback URLs |
+| `grant-sf-mcp-consent.py` | Direct OAuth consent flow (bypasses ApiHub — for headless setups) |
+| `test-salesforce-mcp.py` | 11-step end-to-end Salesforce MCP server validation |
+| `test-agent-oauth.py` | Interactive multi-turn agent test with OAuth consent + MCP |
+| `sf-auth-code.py` | Quick SF authorization code flow for debugging |
 
 ## The Formula
 
@@ -257,6 +323,17 @@ User Message
 
 The agent doesn't just execute a single API call. It **composes** operations: describe an object to learn its schema, query related records, create a new record with the right field names, and verify the result. The same loop, the same pattern, the same simplicity — just pointed at a different domain.
 
+## Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| "Project not found" after `azd down` | Increment `COGNITIVE_ACCOUNT_SUFFIX` (e.g., `azd env set COGNITIVE_ACCOUNT_SUFFIX "2"`) and redeploy |
+| APIM returns 401 Unauthorized | Salesforce token expired (2h TTL) — click **Re-authenticate** in the Chat App |
+| Agent responds without calling tools | OAuth consent didn't complete — look for the consent banner in the chat and click it |
+| APIM breaks MCP streaming | Set response body bytes to `0` in APIM diagnostics (All APIs scope) |
+| `validate-jwt` issuer mismatch | Use your org-specific instance URL (e.g., `https://myorg.my.salesforce.com`), not `login.salesforce.com` |
+| `configure-sf-connected-app.py` fails | Ensure you've run `azd up` first and the Salesforce credentials are correct |
+
 ## Key Takeaway
 
 > **Agents are a workflow integration problem, not an AI problem.**
@@ -264,6 +341,16 @@ The agent doesn't just execute a single API call. It **composes** operations: de
 The model is the same (gpt-4o). The loop is the same (execute → observe → repeat). The innovation is the **meta-tool pattern**: a small, metadata-driven MCP server that gives an agent access to an entire domain — while the user's identity ensures the agent can never exceed the user's own permissions.
 
 Bash made Claude Code a $1B product. Domain-scoped MCP servers can do the same for enterprise.
+
+## Contributing
+
+Contributions are welcome! Please open an [issue](https://github.com/ozgurkarahan/salesforce-meta-tool/issues) or submit a pull request.
+
+This project uses `azd` for deployment — see the [Quick Start](#quick-start) to get a local environment running.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 
