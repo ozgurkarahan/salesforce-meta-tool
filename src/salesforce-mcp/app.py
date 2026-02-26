@@ -34,7 +34,7 @@ sf = SalesforceClient()
 port = int(os.environ.get("PORT", "8000"))
 
 mcp = FastMCP(
-    "Salesforce MCP Server",
+    "Salesforce Meta Tool - MCP Server",
     instructions="""\
 Salesforce MCP server — dynamically discovers objects and fields via Salesforce metadata APIs.
 
