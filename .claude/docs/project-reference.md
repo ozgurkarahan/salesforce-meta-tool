@@ -45,7 +45,7 @@ Always prioritize Bicep for Azure resource creation. The post-provision hook (`h
 - OIDC discovery: `{{SfInstanceUrl}}/.well-known/openid-configuration`
 - Named Values: `SfInstanceUrl`, `APIMGatewayURL`
 - RFC 9728 PRM at `salesforce-mcp/.well-known/oauth-protected-resource`
-- ApiHub uses PKCE for SF OAuth — initial failures in SF login history are expected
+- ApiHub uses PKCE for SF OAuth — SF Connected App must have PKCE required (`isCodeCredentialFlowWithPKCE: true`) so both sides validate the code_verifier/code_challenge handshake
 
 ### Salesforce OAuth Connection
 
@@ -74,11 +74,17 @@ Always prioritize Bicep for Azure resource creation. The post-provision hook (`h
 
 ### Scripts
 
+**Setup (run in order for new org, or use `setup-sf-org.py` to chain all):**
+- `scripts/setup-sf-org.py` — Consolidated orchestrator: chains SSO + ECA + callback + demo user
+- `.claude/scripts/setup-salesforce-sso.py` — Setup Salesforce SSO with Azure AD OIDC federation
+- `scripts/setup-sf-external-client-app.py` — Create External Client App + OAuth settings via Metadata API
+- `scripts/configure-sf-connected-app.py` — Add ApiHub redirect URI to ECA's callback URLs
+- `scripts/setup-sf-demo-user.py` — Demo user + custom profile (no Account delete) + test data
+
+**Testing & Utilities:**
 - `scripts/test-salesforce-mcp.py` — 11-step end-to-end Salesforce MCP test
 - `scripts/test-agent-oauth.py` — Interactive multi-turn agent test (OAuth consent + MCP approval)
 - `scripts/grant-sf-mcp-consent.py` — OAuth consent for Salesforce MCP connection
-- `scripts/configure-sf-connected-app.py` — Automate SF Connected App callback URL setup
-- `scripts/setup-salesforce-sso.py` — Setup Salesforce SSO with Azure AD OIDC federation
 - `scripts/sf-auth-code.py` — Quick SF authorization code flow for testing
 
 ### Deployment Caveats

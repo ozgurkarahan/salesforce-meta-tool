@@ -1,14 +1,14 @@
-"""Grant OAuth consent for the Salesforce MCP connection via device code flow.
+"""Grant OAuth consent for the Salesforce MCP connection.
 
-This script completes the Salesforce OAuth authorization flow that populates
-the Foundry connection with a user's SF refresh token, enabling the agent to
-acquire delegated SF OAuth tokens when calling Salesforce MCP tools.
+This script completes the Salesforce OAuth authorization code flow with PKCE
+that populates the Foundry connection with a user's SF refresh token, enabling
+the agent to acquire delegated SF OAuth tokens when calling Salesforce MCP tools.
 
 One-time manual step after `azd up` with SF OAuth configured.
 
 Flow:
 1. Load azd env vars (SF_CONNECTED_APP_CLIENT_ID, etc.)
-2. Salesforce OAuth authorization code flow (opens browser)
+2. Salesforce OAuth authorization code flow with PKCE (opens browser)
 3. PUT to CognitiveServices connection to store the refresh token
 4. Print success + next steps
 
@@ -16,9 +16,12 @@ Usage: python scripts/grant-sf-mcp-consent.py
 """
 
 import argparse
+import base64
+import hashlib
 import http.server
 import json
 import os
+import secrets
 import subprocess
 import sys
 import threading
@@ -47,8 +50,28 @@ def load_azd_env():
             os.environ.setdefault(key, value)
 
 
+def _generate_pkce_pair() -> tuple[str, str]:
+    """Generate PKCE code_verifier and code_challenge (S256).
+
+    Returns (code_verifier, code_challenge).
+    - code_verifier: 128-char random string from unreserved characters
+    - code_challenge: base64url(SHA256(code_verifier)), no padding
+    """
+    # 96 random bytes -> 128 base64url chars (within the 43-128 char spec)
+    code_verifier = secrets.token_urlsafe(96)
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return code_verifier, code_challenge
+
+
 def sf_auth_code_flow(client_id: str, client_secret: str, login_url: str) -> dict:
-    """Run Salesforce OAuth authorization code flow (opens browser)."""
+    """Run Salesforce OAuth authorization code flow with PKCE (opens browser).
+
+    Uses PKCE (S256) to match what ApiHub does. The SF Connected App must have
+    "Require Proof Key for Code Exchange (PKCE)" enabled so both sides validate
+    the code_verifier/code_challenge handshake end-to-end.
+    """
+    code_verifier, code_challenge = _generate_pkce_pair()
     result = {}
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -80,9 +103,11 @@ def sf_auth_code_flow(client_id: str, client_secret: str, login_url: str) -> dic
         f"&client_id={urllib.parse.quote(client_id)}"
         f"&redirect_uri={urllib.parse.quote(REDIRECT_URI)}"
         f"&scope=api+refresh_token"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
     )
 
-    print("Opening browser for Salesforce login...")
+    print("Opening browser for Salesforce login (with PKCE)...")
     print(f"  URL: {authorize_url[:100]}...")
     try:
         webbrowser.open(authorize_url)
@@ -99,14 +124,15 @@ def sf_auth_code_flow(client_id: str, client_secret: str, login_url: str) -> dic
         print("\nTimed out waiting for authorization callback")
         return {}
 
-    # Exchange code for tokens
-    print("\nExchanging authorization code for tokens...")
+    # Exchange code for tokens (include code_verifier for PKCE)
+    print("\nExchanging authorization code for tokens (with PKCE code_verifier)...")
     data = urllib.parse.urlencode({
         "grant_type": "authorization_code",
         "client_id": client_id,
         "client_secret": client_secret,
         "code": result["code"],
         "redirect_uri": REDIRECT_URI,
+        "code_verifier": code_verifier,
     }).encode()
 
     req = urllib.request.Request(

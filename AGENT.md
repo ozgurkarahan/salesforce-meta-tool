@@ -28,3 +28,17 @@ azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
 - `infra/` — Bicep IaC (main.bicep + modules/)
 - `hooks/postprovision.py` — Entra app + Foundry agent + OAuth connection setup
 - `scripts/` — Setup, consent, and test scripts
+
+### SF Org Setup (after new Dev Trial)
+
+After creating a new Dev Trial org and running `sf org login web`:
+
+```bash
+# One command to set up everything:
+python scripts/setup-sf-org.py --org <alias> --email <admin-email>
+
+# Or run individual steps:
+python scripts/setup-sf-external-client-app.py --org <alias> --email <admin-email>
+python scripts/configure-sf-connected-app.py --app-name Identity_PoC_MCP --org <alias>
+python scripts/setup-sf-demo-user.py --org <alias> --email <admin-email>
+```

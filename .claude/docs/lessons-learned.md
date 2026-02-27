@@ -85,6 +85,48 @@ Rules and patterns collected from project experience. Referenced from [`CLAUDE.m
 **Root cause:** Code was extracted from `secu-propagate-identity` but this branch was accidentally dropped.
 **Rule:** When extracting code between projects, diff the critical UI flow functions (handleResponse, resetAndRetry) to ensure no branches are missing. The missing auto-retry was the real cause of the "PKCE doesn't work" misdiagnosis.
 
+### 2026-02-26 — sf CLI flag names differ across versions
+**Mistake:** Used `--target-dir` for `sf project retrieve start` — the correct flag is `--output-dir`. The script failed immediately.
+**Root cause:** Relied on plan/memory for flag names instead of checking `sf <command> --help` on the target machine.
+**Rule:** Always run `sf <command> --help` to verify exact flag names before writing sf CLI automation. Flag names change between sf CLI versions.
+
+### 2026-02-26 — sf CLI requires sfdx-project.json + force-app directory
+**Mistake:** `sf project retrieve start` and `sf project deploy start` require a valid SFDX project structure (sfdx-project.json + the packageDirectory path must exist). Running from a bare temp directory failed with `InvalidProjectWorkspaceError` then `MissingPackageDirectoryError`.
+**Root cause:** Assumed sf CLI would create the directory structure on retrieve. It doesn't — it validates the project workspace first.
+**Rule:** When using sf CLI in temp directories, always create a minimal `sfdx-project.json` and `mkdir -p force-app/main/default` before running retrieve/deploy commands. Use `cwd` parameter in subprocess instead of `cd` in the command string.
+
+### 2026-02-26 — Salesforce standard profile metadata names differ from labels
+**Mistake:** Tried to retrieve `Profile:Standard User` via Metadata API — Salesforce returned "entity not found". The internal metadata name for "Standard User" is `Standard`, not `Standard User`.
+**Root cause:** Salesforce uses internal API names for standard profiles that differ from UI labels (e.g., "System Administrator" = `Admin`, "Standard User" = `Standard`).
+**Rule:** Don't try to retrieve and clone standard profiles via Metadata API — generate custom profile XML from scratch instead. This is simpler and avoids the metadata name mismatch problem entirely.
+
+### 2026-02-26 — Custom Salesforce profiles need explicit permissions
+**Mistake:** Generated a minimal custom profile with only `objectPermissions` — it was missing `ApiEnabled`, `LightningExperienceUser`, and other `userPermissions`. The demo user couldn't use the API or access Lightning Experience.
+**Root cause:** Custom profiles don't inherit user permissions from the license — only object permissions default from the license. System permissions like `ApiEnabled` must be explicitly granted in the profile metadata.
+**Rule:** When creating custom Salesforce profiles via Metadata API, always include these `userPermissions`: `ApiEnabled`, `LightningExperienceUser`, `RunReports`, `ExportReport`. Check the Standard User profile's permissions via SOQL (`SELECT Permissions* FROM PermissionSet WHERE Profile.Name='Standard User'`) as a reference.
+
+### 2026-02-26 — Windows cp1252 encoding breaks sf CLI and Unicode output
+**Mistake:** `subprocess.run(text=True)` on Windows uses cp1252 by default. sf CLI output containing non-ASCII bytes caused `UnicodeDecodeError`. Arrow characters (`→`) in print statements also failed.
+**Root cause:** Windows default encoding is cp1252, not UTF-8. sf CLI outputs UTF-8.
+**Rule:** Always pass `encoding="utf-8", errors="replace"` to `subprocess.run()` on Windows. Avoid non-ASCII characters (→, •, etc.) in print statements — use ASCII equivalents (`->`, `-`). SF User Alias field max is 8 characters.
+
+### 2026-02-27 — SF Connected App must require PKCE to match ApiHub
+**Mistake:** SF Connected App had PKCE disabled while ApiHub registers with `identityProvider: oauth2pkce` and sends `code_challenge` to Salesforce. SF ignored the `code_challenge`, so the PKCE handshake was never enforced end-to-end. This mismatch likely contributed to token refresh/re-exchange failures after expiry.
+**Root cause:** Both sides of the OAuth flow must agree on PKCE. ApiHub always uses PKCE, but SF was not validating it. Without enforcement, the `code_verifier`/`code_challenge` contract is meaningless.
+**Rule:** When the OAuth client (ApiHub) uses PKCE, the OAuth server (SF Connected App) must also require PKCE. Enable PKCE manually in SF Setup (cannot be done via Metadata API). Ensure all fallback scripts (`grant-sf-mcp-consent.py`) use PKCE so they don't break when SF requires it.
+
+### 2026-02-27 — ECA Metadata API format differs from documentation
+**Mistake:** Generated ECA metadata using speculative directory/file names (`externalClientApplications/`, `.externalClientApplication-meta.xml`, `commaSeparatedOAuth2Scopes`). The actual format from a real SF org is completely different.
+**Root cause:** Assumed Metadata API naming conventions without retrieving from a real org. SF's actual SFDX source format for ECAs uses non-obvious names.
+**Rule:** Always `sf project retrieve start` from a real org before writing metadata generation code. The actual format is:
+- ECA directory: `externalClientApps/` (not `externalClientApplications/`)
+- ECA suffix: `.eca-meta.xml` (not `.externalClientApplication-meta.xml`)
+- OAuth settings name: `{AppName}_oauth` with suffix `.ecaOauth-meta.xml`
+- OAuth settings field: `commaSeparatedOauthScopes` (not `commaSeparatedOAuth2Scopes`)
+- OAuth settings must include `externalClientApplication` and `label` fields
+- PKCE (`isCodeCredentialFlowWithPKCE`) is NOT a valid metadata field -- SF rejects it with "Element invalid at this location". PKCE is UI-only.
+- `ConsumerKey` is NOT a field on the Tooling API `ConnectedApplication` object. ECA-created apps show 0 records in `ConnectedApplication` SOQL queries.
+
 <!-- Example format:
 ### YYYY-MM-DD — Short title
 **Mistake:** What went wrong
