@@ -1,18 +1,71 @@
-# Salesforce Meta-Tool: The Billion-Dollar Agent Loop Applied to Enterprise
+# Salesforce Meta-Tool MCP Server
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![azd compatible](https://img.shields.io/badge/azd-compatible-blue.svg)](https://learn.microsoft.com/azure/developer/azure-developer-cli/)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 
-> **6 tools. ~200 lines of logic. The entire Salesforce platform.**
->
-> This project is a companion to [The Billion-Dollar Agent Loop](https://www.linkedin.com/pulse/billion-dollar-agent-loop-ozgur-karahan-fszae/) — a concrete implementation of domain-scoped MCP servers for enterprise AI agents, with end-to-end identity propagation.
+**6 tools. Fixed token cost. Your entire Salesforce org — with the user's own identity enforced end-to-end.**
 
-## The Idea
+A metadata-driven MCP server for Salesforce that lets an AI agent discover objects, learn field schemas, and construct SOQL queries at runtime. No hardcoded objects. No predefined reports. No service account with admin access.
 
-Claude Code generates over $1B in annualized revenue with a deceptively simple architecture: a single agent loop with ~18 curated tools. Its secret weapon isn't the model — it's **Bash as a meta-tool**. One tool, one interface, access to the entire developer ecosystem (git, npm, docker, kubectl, terraform, ...).
+```
+azd up   # deploys the full stack in ~15 minutes
+```
 
-This project applies the same pattern to enterprise:
+---
+
+## Quick Start
+
+### Prerequisites
+
+| Requirement | Version | Link |
+|-------------|---------|------|
+| Azure subscription | — | [Free trial](https://azure.microsoft.com/free/) |
+| Azure Developer CLI | 1.5+ | [Install azd](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) |
+| Python | 3.11+ | [python.org](https://www.python.org/) |
+| Docker Desktop | — | [docker.com](https://www.docker.com/products/docker-desktop/) |
+| Salesforce org | Developer or Sandbox | [developer.salesforce.com](https://developer.salesforce.com/signup) |
+
+> **You also need a Salesforce Connected App** (External Client Application) configured for OAuth2 with PKCE. See [Setting Up Salesforce](#setting-up-salesforce) below.
+
+### Deploy
+
+```bash
+git clone https://github.com/ozgurkarahan/salesforce-meta-tool.git
+cd salesforce-meta-tool
+
+azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
+azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
+azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
+
+azd up
+```
+
+`azd up` deploys the full stack: Container Apps Environment, APIM Gateway, AI Foundry project, Chat App, Salesforce MCP server, OAuth connections, and the Foundry agent — all via Bicep. First deployment takes ~15 minutes.
+
+### First Use
+
+After `azd up` completes:
+
+1. Configure the callback URL — adds the ApiHub redirect URI to your Salesforce Connected App:
+   ```bash
+   python scripts/configure-sf-connected-app.py
+   ```
+2. Open the Chat App at the URL printed at the end of `azd up`. Sign in with your Azure AD account.
+3. Send a message (e.g., *"Show me my Salesforce accounts"*). On first use, the agent triggers an OAuth consent flow — click the consent link, authenticate with Salesforce, and the agent retries automatically.
+
+For headless or CI environments:
+```bash
+python scripts/grant-sf-mcp-consent.py
+```
+
+---
+
+## The Idea: Meta-Tool Pattern
+
+Most Salesforce MCP servers define one tool per object (`get_accounts`, `get_opportunities`, …). That approach doesn't scale — an org with 100 custom objects needs 100 tools.
+
+This project uses a different pattern, borrowed from how Claude Code works:
 
 ```
 Developer World                    Enterprise World
@@ -20,66 +73,85 @@ Developer World                    Enterprise World
 Bash (meta-tool)          →        Salesforce MCP Server (meta-tool)
   └─ git, npm, docker               └─ list, describe, query, search, write, approve
      kubectl, terraform                 covers any object, any field, any workflow
-
-Single agent loop          →        Single agent loop
-  └─ Plan → Execute → Verify          └─ Plan → Execute → Verify
 ```
 
 **Bash doesn't implement git.** It delegates to git. The agent builds the command.
 
-**The Salesforce MCP server doesn't implement CRM logic.** It delegates to Salesforce. The agent builds the query.
+**This MCP server doesn't implement CRM logic.** It delegates to Salesforce. The agent builds the query.
 
-The MCP server is a thin metadata-driven bridge: the agent discovers objects, learns field schemas, then constructs SOQL queries, SOSL searches, and CRUD operations on the fly. No hardcoded Salesforce objects. No predefined reports. No brittle integrations. Just 6 tools that cover the entire platform.
+The server is a thin metadata-driven bridge: the agent calls `describe_object("Account")`, learns the schema, and constructs the SOQL query — instead of calling a hardcoded `get_accounts()` function.
 
-## But Isn't That Dangerous?
+---
 
-This is the question every enterprise architect asks — and the right question.
+## The 6 Tools — 1,235 Tokens for All of Salesforce
 
-Claude Code solves this with OS-level sandboxing. But enterprise agents can't sandbox Salesforce behind a container. **The data is live. The actions are real. A rogue agent could delete production records.**
+The entire tool surface fits in less than 1% of a 128K context window, and the cost is **fixed** regardless of org size.
 
-Our answer: **the agent inherits the user's identity.**
+| Tool | Tokens | What it does |
+|------|--------|--------------|
+| `list_objects` | 117 | Discover objects (1000+ in a typical org) — filter by name/label |
+| `describe_object` | 109 | Field schemas, types, required flags, picklists, external IDs |
+| `soql_query` | 225 | Full SOQL: relationships, aggregates, GROUP BY, auto-pagination |
+| `search_records` | 175 | SOSL full-text search across multiple objects simultaneously |
+| `write_record` | 226 | Create, update, upsert (by external ID), delete |
+| `process_approval` | 129 | Submit, approve, reject — Salesforce approval workflows |
+| **Server instructions** | **254** | Workflow guidance, conventions, when-to-use-which-tool |
+| **Total** | **1,235** | **All objects, all fields, all operations** |
+
+Compare with the alternatives:
+
+| Approach | Token cost | Coverage |
+|----------|------------|----------|
+| Full OpenAPI spec | 5,000–15,000 | Hundreds of endpoints, most irrelevant |
+| RAG documentation chunks | 2,000–10,000 | Partial, depends on retrieval quality |
+| One tool per object | ~500 × N objects | Scales linearly, N can be 100+ |
+| **This MCP server** | **1,235 fixed** | **All objects, all fields, all operations** |
+
+> **Note:** The 1,235 tokens cover tool definitions. In practice, each `describe_object` call returns field schemas at runtime — a complex multi-step workflow will consume additional context. This is intentional: schemas are loaded on demand rather than pre-loaded into the system prompt.
+
+### Tool Reference
+
+**`list_objects`** — Entry point. Filters by name or label to find the right object among 1,000+. Returns name, label, and CRUD capability flags. Think `ls`.
+
+**`describe_object`** — Schema inspector. Returns every field with its API name, data type, required flag, picklist values, relationships, and external ID flags. The agent calls this *before* writing. Think `man`.
+
+**`soql_query`** — Precision read tool. Supports the full SOQL syntax: relationship queries, aggregates, `GROUP BY`, `HAVING`, date functions, subqueries. Auto-paginates at Salesforce's 2,000-record limit. Think `SQL`.
+
+**`search_records`** — Discovery tool. SOSL full-text search across multiple objects simultaneously — useful when the agent doesn't know *which* object contains the data. Think `rg`.
+
+**`write_record`** — Mutation tool. Four operations: `create`, `update`, `upsert` (by external ID), `delete`. Validates field names against the schema before calling the API — catches typos before they reach Salesforce. Think `echo >` or `rm`.
+
+**`process_approval`** — Workflow tool. Submit records for approval, approve or reject pending work items. Integrates with Salesforce's built-in approval workflows. Think `git push` — a governed state transition.
+
+---
+
+## Identity Propagation: Why It Matters
+
+The most common enterprise MCP pattern connects via a service account:
 
 ```
-┌──────────┐     ┌──────────────┐     ┌──────┐     ┌───────────────────┐     ┌────────────┐
-│  User     │────▶│  AI Foundry  │────▶│ APIM │────▶│  Salesforce MCP   │────▶│ Salesforce  │
-│ (browser) │ JWT │  Agent       │ JWT │      │ JWT │  Server           │ JWT │ REST API   │
-└──────────┘     └──────────────┘     └──────┘     └───────────────────┘     └────────────┘
-     │                                                                            │
-     └────────────── same user identity, same permissions ────────────────────────┘
+User → Agent → Service Account → Salesforce
+                    ↑
+        Admin access. Sees ALL data. Bypasses sharing rules.
+        "List all opportunities" returns the entire pipeline.
 ```
 
-The user's Salesforce OAuth token flows through every layer — untouched, unescalated. The MCP server never stores tokens. It passes them through. The Salesforce API enforces the same CRUD permissions, field-level security, sharing rules, and approval workflows that apply when the user logs into Salesforce directly.
+This project propagates the user's own token through every layer:
 
-> [!WARNING]
-> **Without identity propagation**, the agent connects via a service account with admin access — it sees ALL data, can modify ANYTHING, and bypasses sharing rules. This project ensures **the agent can only do what the user can do.** Not more. Not less. Not different.
-
-## The Architecture
-
-```mermaid
-flowchart LR
-    Browser["Browser\nMSAL.js"]
-    ChatApp["Chat App\nFastAPI"]
-    Agent["AI Foundry Agent\ngpt-4o + MCP tools"]
-    APIM["APIM Gateway\nvalidate-jwt\nRFC 9728 PRM"]
-    MCP["Salesforce MCP\n6 tools · FastMCP\nbearer passthrough"]
-    SF["Salesforce\nREST API"]
-
-    Browser -->|"Azure AD\ntoken"| ChatApp
-    ChatApp -->|"UserToken-\nCredential"| Agent
-    Agent -->|"MCP\nprotocol"| APIM
-    APIM -->|"SF bearer\ntoken"| MCP
-    MCP -->|"user's SF\ntoken"| SF
-
-    style Browser fill:#4A90D9,color:#fff
-    style ChatApp fill:#7B68EE,color:#fff
-    style Agent fill:#9370DB,color:#fff
-    style APIM fill:#20B2AA,color:#fff
-    style MCP fill:#FF8C00,color:#fff
-    style SF fill:#00CED1,color:#fff
+```
+┌──────────┐   ┌──────────────┐   ┌──────┐   ┌───────────────┐   ┌────────────┐
+│  User    │──▶│  AI Foundry  │──▶│ APIM │──▶│  Salesforce   │──▶│ Salesforce │
+│(browser) │JWT│  Agent       │JWT│      │JWT│  MCP Server   │JWT│ REST API   │
+└──────────┘   └──────────────┘   └──────┘   └───────────────┘   └────────────┘
+     │                                                                   │
+     └─────────────── same user identity, same permissions ──────────────┘
 ```
 
-> [!NOTE]
-> The MCP server is **stateless** — it never stores, caches, or refreshes tokens. The bearer token middleware extracts the token from the request and passes it directly to the Salesforce REST API. This is the entire identity propagation code:
+The user's Salesforce OAuth token flows through every layer — untouched, unescalated. The MCP server never stores tokens. The Salesforce API enforces the same CRUD permissions, field-level security, sharing rules, and approval workflows that apply when the user logs into the Salesforce UI directly.
+
+**The agent becomes a power tool, not a privileged backdoor.**
+
+The entire identity propagation logic is seven lines:
 
 ```python
 class BearerTokenMiddleware(BaseHTTPMiddleware):
@@ -93,189 +165,48 @@ class BearerTokenMiddleware(BaseHTTPMiddleware):
             _request_token.reset(tok)
 ```
 
-Seven lines. That's the security boundary.
+### What Identity Propagation Does Not Protect Against
 
-## The 6 Tools — 1,235 Tokens for All of Salesforce
+Identity propagation prevents privilege escalation — the agent can't do more than the user. It does not prevent the agent from misunderstanding intent. A query like *"delete all closed-lost opportunities from 2023"* is valid SOQL that will execute with full authorization if the user has delete rights.
 
-Here's the part that surprises people: **the entire tool surface costs less than 1% of the model's context window.**
+For production use, treat destructive operations with the same care you'd apply to any irreversible action: confirmation prompts, audit logging, and appropriate permission scoping in Salesforce.
 
-Measured with gpt-4o's tokenizer (`o200k_base`):
+---
 
-| Tool | Tokens | What it does |
-|------|--------|-------------|
-| `list_objects` | 117 | Discover objects (1000+ in a typical org) — filter by name/label |
-| `describe_object` | 109 | Field schemas, types, required flags, picklists, external IDs |
-| `soql_query` | 225 | Full SOQL: relationships, aggregates, GROUP BY, auto-pagination |
-| `search_records` | 175 | SOSL full-text search across multiple objects simultaneously |
-| `write_record` | 226 | Create, update, upsert (by external ID), delete — with validation |
-| `process_approval` | 129 | Submit, approve, reject — Salesforce approval workflows |
-| **Server instructions** | **254** | Workflow guidance, conventions, when-to-use-which-tool |
-| | | |
-| **Total** | **1,235** | **0.96% of gpt-4o's 128K context window** |
+## Architecture
 
-Compare that with the alternatives:
-
-| Approach | Token cost | Coverage |
-|----------|-----------|----------|
-| Full OpenAPI spec | 5,000-15,000 | Hundreds of endpoints, most irrelevant |
-| RAG documentation chunks | 2,000-10,000 | Partial, depends on retrieval quality |
-| One tool per object | ~500 x N objects | Scales linearly, N can be 100+ |
-| **This MCP server** | **1,235 fixed** | **All objects, all fields, all operations** |
-
-The token cost is **fixed** regardless of how many Salesforce objects exist. An org with 50 custom objects pays the same 1,235 tokens as an org with 500. The agent discovers schemas at runtime via `describe_object` — the tool definitions don't change.
-
-This is the meta-tool advantage: instead of encoding domain knowledge in the tool definitions (which consumes tokens), you encode **discovery primitives** that let the agent learn the domain on the fly. The Salesforce metadata API becomes the agent's documentation.
-
-### What Each Tool Does
-
-**`list_objects`** — The entry point. Salesforce orgs have 1000+ objects (standard + custom). The agent filters by name or label to find what it needs. Returns: name, label, queryable/createable/updateable/deletable flags. Think `ls` for Salesforce.
-
-**`describe_object`** — The schema inspector. Given an object name (e.g., `Account`), returns every field with its API name, data type, whether it's required, picklist values, relationship references, and external ID flags. The agent calls this *before* writing — it learns the interface, not guesses. Think `man` or `--help`.
-
-**`soql_query`** — The precision read tool. The agent constructs a complete SOQL query — it supports the full syntax: relationship queries (`SELECT Account.Name FROM Contact`), aggregates (`COUNT`, `SUM`), `GROUP BY`, `HAVING`, date functions, subqueries. Auto-paginates large result sets (Salesforce pages at ~2000 records). Think `grep` or `SQL`.
-
-**`search_records`** — The discovery tool. SOSL full-text search across multiple objects at once — useful when the agent doesn't know *which* object contains the data. Search for "Acme" and find it in Accounts, Contacts, and Opportunities simultaneously. Think `find` or `rg`.
-
-**`write_record`** — The mutation tool. Four operations: `create` (new record), `update` (partial modify by ID), `upsert` (create-or-update by external ID), `delete` (permanent removal). Validates field names against the schema before sending — catches typos before they hit the API. Think `echo >` or `rm`.
-
-**`process_approval`** — The workflow tool. Submit records for approval, approve or reject pending work items. Integrates with Salesforce's built-in approval workflows — the same ones configured by admins in Setup. Think `git push` — a governed state transition.
-
-Just as Bash gives a developer agent access to the entire OS ecosystem, these 6 tools give an enterprise agent access to the entire Salesforce platform — any object, any field, any record, any workflow.
-
-The agent doesn't need a hardcoded `get_accounts()` function. It calls `describe_object("Account")`, learns the schema, and builds a SOQL query. Just like Claude Code doesn't need a hardcoded `run_tests()` function — it reads the project, finds the test framework, and runs the right command.
-
-## Why Identity Propagation Matters
-
-Without identity propagation:
 ```
-User A (sales rep) → Agent → Service Account → Salesforce
-                                  ↑
-                    This account has admin access.
-                    Agent sees ALL data. Can modify ANYTHING.
-                    "List all opportunities" returns the entire pipeline.
-                    "Delete this record" works on any record.
+flowchart LR
+    Browser["Browser\nMSAL.js"]
+    ChatApp["Chat App\nFastAPI"]
+    Agent["AI Foundry Agent\ngpt-4o + MCP tools"]
+    APIM["APIM Gateway\nvalidate-jwt / RFC 9728 PRM"]
+    MCP["Salesforce MCP\n6 tools · FastMCP\nbearer passthrough"]
+    SF["Salesforce\nREST API"]
+
+    Browser -->|"Azure AD token"| ChatApp
+    ChatApp -->|"UserTokenCredential"| Agent
+    Agent -->|"MCP protocol"| APIM
+    APIM -->|"SF bearer token"| MCP
+    MCP -->|"user's SF token"| SF
 ```
 
-With identity propagation:
-```
-User A (sales rep) → Agent → User A's token → Salesforce
-                                  ↑
-                    Same permissions as User A in Salesforce.
-                    Agent sees only User A's data (sharing rules).
-                    Field-level security enforced. Approval workflows active.
-                    "Delete this record" fails if User A can't delete it.
-```
+The MCP server is **stateless** — it never stores, caches, or refreshes tokens.
 
-**The agent becomes a power tool, not a privileged backdoor.** The user's Salesforce profile, permission sets, sharing rules, and org-wide defaults all apply — exactly as if the user were clicking buttons in the Salesforce UI. The difference is the agent can compose multi-step operations intelligently.
+### How the Token Flows
 
-## How The Token Flows
+1. User signs in via MSAL.js → gets an Azure AD token
+2. Chat App passes the token to AI Foundry as a `UserTokenCredential`
+3. AI Foundry Agent hits the Salesforce MCP tool → triggers OAuth consent (first time only)
+4. User authenticates with Salesforce via OAuth2 + PKCE
+5. ApiHub stores the Salesforce token on the Foundry project connection
+6. Agent calls MCP server — APIM validates the SF JWT (`validate-jwt` with OIDC discovery)
+7. MCP server receives the bearer token via middleware, passes it directly to the Salesforce REST API
+8. Salesforce enforces permissions based on the authenticated user's profile
 
-1. **User signs in** via MSAL.js in the browser → gets an Azure AD token
-2. **Chat App** passes the token to AI Foundry as a `UserTokenCredential`
-3. **AI Foundry Agent** hits the Salesforce MCP tool → triggers OAuth consent (first time only)
-4. **User authenticates with Salesforce** via OAuth2 authorization code + PKCE
-5. **ApiHub** stores the Salesforce token on the Foundry project connection
-6. **Agent calls MCP server** — APIM validates the SF JWT (`validate-jwt` with OIDC discovery)
-7. **MCP server** receives the bearer token via middleware, passes it directly to Salesforce REST API
-8. **Salesforce** enforces permissions based on the authenticated user's profile
+See [`docs/reauth-consent-flow.md`](docs/reauth-consent-flow.md) for the full OAuth + PKCE consent sequence.
 
-See [`docs/reauth-consent-flow.md`](docs/reauth-consent-flow.md) for a detailed chronological trace of the full OAuth + PKCE consent sequence.
-
-## Quick Start
-
-### Prerequisites
-
-| Requirement | Version | Link |
-|---|---|---|
-| Azure subscription | — | [Free trial](https://azure.microsoft.com/free/) |
-| Azure Developer CLI | 1.5+ | [Install azd](https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd) |
-| Python | 3.11+ | [python.org](https://www.python.org/) |
-| Docker Desktop | — | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| Salesforce org | Developer or Sandbox | [developer.salesforce.com](https://developer.salesforce.com/signup) |
-
-> [!IMPORTANT]
-> You need a **Salesforce Connected App** (External Client Application) configured for OAuth2 with PKCE. See [Setting Up Salesforce](#setting-up-salesforce) below if you're starting from scratch.
-
-### Deploy
-
-```bash
-# Clone and configure
-git clone https://github.com/ozgurkarahan/salesforce-meta-tool.git
-cd salesforce-meta-tool
-
-# Set Salesforce credentials
-azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
-azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
-azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
-
-# Deploy everything
-azd up
-```
-
-> [!NOTE]
-> `azd up` deploys the full stack: Container Apps Environment, APIM Gateway, AI Foundry project, Chat App, Salesforce MCP server, OAuth connections, and the Foundry agent — all via Bicep. First deployment takes ~15 minutes.
-
-### Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `SF_INSTANCE_URL` | Yes | Your Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
-| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
-| `SF_CONNECTED_APP_CLIENT_SECRET` | Yes | Consumer Secret from the Salesforce Connected App |
-| `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid "Project not found" errors (default: empty) |
-| `AZURE_LOCATION` | No | Azure region (default: `swedencentral`, set during `azd init`) |
-
-## Setting Up Salesforce
-
-If you're starting from a **new Salesforce Developer org**, follow these steps:
-
-1. **Sign up** for a free Developer org at [developer.salesforce.com/signup](https://developer.salesforce.com/signup)
-
-2. **Create an External Client App** in Salesforce Setup:
-   - Navigate to **Setup → App Manager → New Connected App**
-   - Enable **OAuth Settings**
-   - Add OAuth scopes: `api`, `refresh_token`
-   - Leave the Callback URL empty for now (the configure script adds it)
-   - Save, then copy the **Consumer Key** and **Consumer Secret**
-
-3. **Set the credentials** in your azd environment:
-   ```bash
-   azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
-   azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
-   azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
-   ```
-
-4. **Deploy** with `azd up`
-
-5. **Configure the callback URL** — adds the ApiHub redirect URI to your Connected App:
-   ```bash
-   python scripts/configure-sf-connected-app.py
-   ```
-
-6. **Send your first message** in the Chat App — this triggers the OAuth consent flow. Authenticate with Salesforce when prompted, and the agent will automatically retry your query.
-
-> [!NOTE]
-> The Connected App's Consumer Key is **not** retrievable via API — you must copy it from Salesforce Setup manually.
-
-## Post-Deployment
-
-After `azd up` completes:
-
-1. **Configure the callback URL** — adds the ApiHub redirect URI to your Salesforce Connected App's allowed callbacks:
-   ```bash
-   python scripts/configure-sf-connected-app.py
-   ```
-
-2. **Open the Chat App** — the URL is printed at the end of `azd up`. Sign in with your Azure AD account.
-
-3. **Send a message** (e.g., "Show me my Salesforce accounts"). On first use, the agent triggers an OAuth consent flow — click the consent link, authenticate with Salesforce, and the agent automatically retries your query.
-
-4. **(Optional) Headless consent** — for automated or CI environments where browser consent is impractical:
-   ```bash
-   python scripts/grant-sf-mcp-consent.py
-   ```
-
-See [`docs/reauth-consent-flow.md`](docs/reauth-consent-flow.md) for the full trace of the consent + re-authentication sequence.
+---
 
 ## Project Structure
 
@@ -291,7 +222,7 @@ salesforce-meta-tool/
 │       └── static/               # Vanilla JS SPA with MSAL.js
 ├── infra/
 │   ├── main.bicep                # Orchestrator — all Azure resources
-│   └── modules/                  # Modular Bicep (APIM, Container Apps, AI Foundry, ...)
+│   └── modules/                  # Modular Bicep (APIM, Container Apps, AI Foundry, …)
 ├── hooks/
 │   └── postprovision.py          # Creates Entra app + Foundry agent + OAuth connections
 ├── scripts/                      # Setup, consent, and test scripts
@@ -301,57 +232,87 @@ salesforce-meta-tool/
 ### Scripts
 
 | Script | Purpose |
-|---|---|
+|--------|---------|
 | `configure-sf-connected-app.py` | Adds ApiHub redirect URI to SF Connected App callback URLs |
 | `grant-sf-mcp-consent.py` | Direct OAuth consent flow (bypasses ApiHub — for headless setups) |
 | `test-salesforce-mcp.py` | 11-step end-to-end Salesforce MCP server validation |
 | `test-agent-oauth.py` | Interactive multi-turn agent test with OAuth consent + MCP |
 | `sf-auth-code.py` | Quick SF authorization code flow for debugging |
 
-## The Formula
+---
 
-From the article, applied here:
+## Environment Variables
 
-```
-User Message
-  → Agent plans (which Salesforce objects? which fields?)
-  → Agent executes (describe → query → write → verify)
-  → Agent verifies (did the SOQL return expected data? did the write succeed?)
-  → TODO tracking (multi-step operations stay on track)
-  → Loop (or ask the user for clarification)
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `SF_INSTANCE_URL` | Yes | Your Salesforce org URL (e.g., `https://myorg.my.salesforce.com`) |
+| `SF_CONNECTED_APP_CLIENT_ID` | Yes | Consumer Key from the Salesforce Connected App |
+| `SF_CONNECTED_APP_CLIENT_SECRET` | Yes | Consumer Secret from the Salesforce Connected App |
+| `COGNITIVE_ACCOUNT_SUFFIX` | No | Increment after `azd down --purge` to avoid "Project not found" errors (default: empty) |
+| `AZURE_LOCATION` | No | Azure region (default: `swedencentral`) |
 
-The agent doesn't just execute a single API call. It **composes** operations: describe an object to learn its schema, query related records, create a new record with the right field names, and verify the result. The same loop, the same pattern, the same simplicity — just pointed at a different domain.
+---
+
+## Setting Up Salesforce
+
+For a new Salesforce Developer org:
+
+1. Sign up at [developer.salesforce.com/signup](https://developer.salesforce.com/signup)
+2. Create an External Client App in Salesforce Setup:
+   - Navigate to **Setup → App Manager → New Connected App**
+   - Enable **OAuth Settings**
+   - Add OAuth scopes: `api`, `refresh_token`
+   - Leave the Callback URL empty for now (the configure script adds it)
+   - Save, then copy the **Consumer Key** and **Consumer Secret**
+3. Set the credentials:
+   ```bash
+   azd env set SF_INSTANCE_URL "https://your-org.my.salesforce.com"
+   azd env set SF_CONNECTED_APP_CLIENT_ID "<consumer-key>"
+   azd env set SF_CONNECTED_APP_CLIENT_SECRET "<consumer-secret>"
+   ```
+4. Deploy with `azd up`
+5. Run `python scripts/configure-sf-connected-app.py` to add the callback URL
+
+> The Connected App's Consumer Key is not retrievable via API — copy it from Salesforce Setup manually.
+
+---
 
 ## Troubleshooting
 
 | Problem | Solution |
-|---|---|
+|---------|---------|
 | "Project not found" after `azd down` | Increment `COGNITIVE_ACCOUNT_SUFFIX` (e.g., `azd env set COGNITIVE_ACCOUNT_SUFFIX "2"`) and redeploy |
 | APIM returns 401 Unauthorized | Salesforce token expired (2h TTL) — click **Re-authenticate** in the Chat App |
-| Agent responds without calling tools | OAuth consent didn't complete — look for the consent banner in the chat and click it |
+| Agent responds without calling tools | OAuth consent didn't complete — look for the consent banner in the chat |
 | APIM breaks MCP streaming | Set response body bytes to `0` in APIM diagnostics (All APIs scope) |
-| `validate-jwt` issuer mismatch | Use your org-specific instance URL (e.g., `https://myorg.my.salesforce.com`), not `login.salesforce.com` |
-| `configure-sf-connected-app.py` fails | Ensure you've run `azd up` first and the Salesforce credentials are correct |
-
-## Key Takeaway
-
-> **Agents are a workflow integration problem, not an AI problem.**
-
-The model is the same (gpt-4o). The loop is the same (execute → observe → repeat). The innovation is the **meta-tool pattern**: a small, metadata-driven MCP server that gives an agent access to an entire domain — while the user's identity ensures the agent can never exceed the user's own permissions.
-
-Bash made Claude Code a $1B product. Domain-scoped MCP servers can do the same for enterprise.
-
-## Contributing
-
-Contributions are welcome! Please open an [issue](https://github.com/ozgurkarahan/salesforce-meta-tool/issues) or submit a pull request.
-
-This project uses `azd` for deployment — see the [Quick Start](#quick-start) to get a local environment running.
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
+| `validate-jwt` issuer mismatch | Use your org-specific instance URL, not `login.salesforce.com` |
+| `configure-sf-connected-app.py` fails | Ensure `azd up` has run and Salesforce credentials are set |
 
 ---
 
-*See the full analysis in [The Billion-Dollar Agent Loop](https://www.linkedin.com/pulse/billion-dollar-agent-loop-ozgur-karahan-fszae/) on LinkedIn.*
+## Current Scope and Limitations
+
+This project is a proof of concept. Before using in production, consider:
+
+- **Destructive operations**: There are no confirmation prompts or audit logs on `write_record` delete operations. Add guardrails appropriate to your org's governance requirements.
+- **Token expiry mid-workflow**: Salesforce tokens have a 2-hour TTL. Long-running agentic workflows will need a re-authentication strategy.
+- **Azure-specific infrastructure**: The deployment stack (APIM, AI Foundry, Container Apps) is Azure-native. Adapting this pattern to other clouds or self-hosted models requires replacing the infrastructure layer.
+- **Rate limits**: The Salesforce REST API has per-org API call limits. High-frequency agentic workflows should account for this.
+
+---
+
+## Contributing
+
+Contributions are welcome. Please open an [issue](https://github.com/ozgurkarahan/salesforce-meta-tool/issues) or submit a pull request.
+
+This project uses `azd` for deployment — see [Quick Start](#quick-start) to get a local environment running.
+
+---
+
+## License
+
+[MIT License](LICENSE)
+
+---
+
+*Related article: [The Meta-Tool Pattern Applied to Enterprise](https://www.linkedin.com/pulse/billion-dollar-agent-loop-ozgur-karahan-fszae/) on LinkedIn.*
