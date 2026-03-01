@@ -201,9 +201,9 @@ def update_connection(
                 "clientSecret": client_secret,
                 "refreshToken": refresh_token,
             },
-            "authorizationUrl": "https://login.salesforce.com/services/oauth2/authorize",
-            "tokenUrl": "https://login.salesforce.com/services/oauth2/token",
-            "refreshUrl": "https://login.salesforce.com/services/oauth2/token",
+            "authorizationUrl": f"{login_url}/services/oauth2/authorize",
+            "tokenUrl": f"{login_url}/services/oauth2/token",
+            "refreshUrl": f"{login_url}/services/oauth2/token",
             "scopes": ["api", "refresh_token"],
             "metadata": {"type": "custom_MCP"},
             "isSharedToAll": True,
@@ -260,7 +260,11 @@ def main():
     client_secret = os.environ.get("SF_CONNECTED_APP_CLIENT_SECRET", "")
     connection_name = os.environ.get("SF_OAUTH_CONNECTION_NAME", "salesforce-oauth")
     sf_mcp_endpoint = os.environ.get("APIM_SF_MCP_ENDPOINT", "")
-    login_url = os.environ.get("SF_LOGIN_URL", "https://login.salesforce.com")
+    login_url = (
+        os.environ.get("SF_LOGIN_URL")
+        or os.environ.get("SF_INSTANCE_URL")
+        or "https://login.salesforce.com"
+    )
 
     if not client_id or not client_secret:
         print("ERROR: Missing SF OAuth env vars.")

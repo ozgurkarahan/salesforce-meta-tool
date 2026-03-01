@@ -9,6 +9,9 @@ let appInsights = null;
 let pendingRetryMessage = null;
 let awaitingPostConsentRetry = false;
 let postConsentRetryCount = 0;
+let postConsentPollCount = 0;
+const MAX_CONSENT_POLLS = 4;
+const CONSENT_POLL_DELAY_MS = 3000;
 const sessionId = crypto.randomUUID();
 
 // ---------------------------------------------------------------------------
@@ -165,9 +168,13 @@ async function sendMessage() {
             name: 'ChatResponse',
             properties: { type: data.type, responseId: data.response_id, requestId: data.request_id }
         });
-        // Store original message — consent chain may need to retry with it
+        // Store original message — consent chain may need to retry with it.
+        // Reset all consent state so a fresh user message never enters the
+        // silent polling loop meant only for post-consent propagation delay.
         pendingRetryMessage = message;
         postConsentRetryCount = 0;
+        postConsentPollCount = 0;
+        awaitingPostConsentRetry = false;
         handleResponse(data);
     } catch (err) {
         if (appInsights) appInsights.trackException({ exception: err });
@@ -179,7 +186,17 @@ async function sendMessage() {
 
 function handleResponse(data) {
     if (data.consent_required) {
-        showConsentBanner(data.consent_link);
+        if (awaitingPostConsentRetry && postConsentPollCount < MAX_CONSENT_POLLS) {
+            // Consent was just completed but tokens haven't propagated yet.
+            // Wait and retry silently instead of re-showing the banner.
+            postConsentPollCount++;
+            addSystemMessage('Waiting for consent to propagate... (attempt ' + postConsentPollCount + '/' + MAX_CONSENT_POLLS + ')');
+            setTimeout(() => retryOriginalQuery(), CONSENT_POLL_DELAY_MS);
+        } else {
+            // First consent request, or all poll retries exhausted — show banner.
+            postConsentPollCount = 0;
+            showConsentBanner(data.consent_link);
+        }
     } else if (data.approval_required) {
         addSystemMessage('Agent requesting tool access — auto-approving...');
         autoApprove(data.approval_ids.map(a => a.id));
@@ -188,8 +205,11 @@ function handleResponse(data) {
         // Re-send the original query so the agent uses the now-authorized MCP tools.
         awaitingPostConsentRetry = false;
         postConsentRetryCount++;
+        postConsentPollCount = 0;
         retryOriginalQuery();
     } else if (data.text) {
+        awaitingPostConsentRetry = false;
+        postConsentPollCount = 0;
         addMessage('assistant', data.text);
     } else {
         addSystemMessage('Agent returned no text response.');

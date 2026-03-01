@@ -251,6 +251,7 @@ module sfOAuthConnection 'modules/sf-oauth-connection.bicep' = {
     sfMcpEndpoint: apimSfMcp.outputs.sfMcpEndpoint
     clientId: sfConnectedAppClientId
     clientSecret: sfConnectedAppClientSecret
+    sfLoginUrl: !empty(sfInstanceUrl) ? sfInstanceUrl : 'https://login.salesforce.com'
   }
 }
 

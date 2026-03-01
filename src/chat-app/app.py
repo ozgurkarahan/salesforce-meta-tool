@@ -274,7 +274,7 @@ async def chat_approve(request: Request):
                 openai_client.responses.create,
                 previous_response_id=previous_response_id,
                 input=approval_input,
-                extra_body={"agent": {"name": agent_name, "type": "agent_reference"}},
+                extra_body={"agent_reference": {"name": agent_name, "type": "agent_reference"}},
             ),
             timeout=120,
         )
@@ -312,6 +312,14 @@ def _build_sf_oauth_body():
     if not all([client_id, client_secret, apim_gateway]):
         return None
 
+    # Use My Domain URL for OAuth so consent routes through Azure AD SSO.
+    # Fallback chain: SF_LOGIN_URL > SF_INSTANCE_URL > login.salesforce.com
+    sf_login_url = (
+        os.environ.get("SF_LOGIN_URL")
+        or os.environ.get("SF_INSTANCE_URL")
+        or "https://login.salesforce.com"
+    )
+
     return {
         "properties": {
             "authType": "OAuth2",
@@ -323,9 +331,9 @@ def _build_sf_oauth_body():
                 "clientId": client_id,
                 "clientSecret": client_secret,
             },
-            "authorizationUrl": "https://login.salesforce.com/services/oauth2/authorize",
-            "tokenUrl": "https://login.salesforce.com/services/oauth2/token",
-            "refreshUrl": "https://login.salesforce.com/services/oauth2/token",
+            "authorizationUrl": f"{sf_login_url}/services/oauth2/authorize",
+            "tokenUrl": f"{sf_login_url}/services/oauth2/token",
+            "refreshUrl": f"{sf_login_url}/services/oauth2/token",
             "scopes": ["api", "refresh_token"],
             "metadata": {"type": "custom_MCP"},
             "isSharedToAll": True,

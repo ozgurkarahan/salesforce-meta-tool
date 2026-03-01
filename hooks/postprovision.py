@@ -245,6 +245,13 @@ def update_sf_oauth_connection():
     print(f"  Deleting Bicep-created connection '{connection_name}'...")
     run(f'az rest --method DELETE --url "{url}"')
 
+    # Use My Domain URL for OAuth so consent routes through Azure AD SSO.
+    sf_login_url = (
+        os.environ.get("SF_LOGIN_URL")
+        or os.environ.get("SF_INSTANCE_URL")
+        or "https://login.salesforce.com"
+    )
+
     # Step 2: Recreate via ARM REST PUT (triggers ApiHub connector registration)
     body = {
         "properties": {
@@ -257,9 +264,9 @@ def update_sf_oauth_connection():
                 "clientId": client_id,
                 "clientSecret": client_secret,
             },
-            "authorizationUrl": "https://login.salesforce.com/services/oauth2/authorize",
-            "tokenUrl": "https://login.salesforce.com/services/oauth2/token",
-            "refreshUrl": "https://login.salesforce.com/services/oauth2/token",
+            "authorizationUrl": f"{sf_login_url}/services/oauth2/authorize",
+            "tokenUrl": f"{sf_login_url}/services/oauth2/token",
+            "refreshUrl": f"{sf_login_url}/services/oauth2/token",
             "scopes": ["api", "refresh_token"],
             "metadata": {"type": "custom_MCP"},
             "isSharedToAll": True,

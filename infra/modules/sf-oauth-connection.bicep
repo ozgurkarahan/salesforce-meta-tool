@@ -30,6 +30,9 @@ param clientId string
 @description('Salesforce Connected App client secret (consumer secret)')
 param clientSecret string
 
+@description('Salesforce login URL for OAuth (My Domain URL enables Azure AD SSO)')
+param sfLoginUrl string = 'https://login.salesforce.com'
+
 resource cognitiveAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = {
   name: cognitiveAccountName
 }
@@ -52,9 +55,9 @@ resource sfOAuthConnection 'Microsoft.CognitiveServices/accounts/projects/connec
       clientId: clientId
       clientSecret: clientSecret
     }
-    authorizationUrl: 'https://login.salesforce.com/services/oauth2/authorize'
-    tokenUrl: 'https://login.salesforce.com/services/oauth2/token'
-    refreshUrl: 'https://login.salesforce.com/services/oauth2/token'
+    authorizationUrl: '${sfLoginUrl}/services/oauth2/authorize'
+    tokenUrl: '${sfLoginUrl}/services/oauth2/token'
+    refreshUrl: '${sfLoginUrl}/services/oauth2/token'
     scopes: ['api', 'refresh_token']
     metadata: {
       type: 'custom_MCP'

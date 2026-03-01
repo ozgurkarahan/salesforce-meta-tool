@@ -127,6 +127,45 @@ Rules and patterns collected from project experience. Referenced from [`CLAUDE.m
 - PKCE (`isCodeCredentialFlowWithPKCE`) is NOT a valid metadata field -- SF rejects it with "Element invalid at this location". PKCE is UI-only.
 - `ConsumerKey` is NOT a field on the Tooling API `ConnectedApplication` object. ECA-created apps show 0 records in `ConnectedApplication` SOQL queries.
 
+### 2026-02-27 — Post-consent retry loop needed for ApiHub propagation delay
+**Bug:** After user completed OAuth consent, `continueAfterConsent()` immediately sent a continuation which got ANOTHER `consent_required` (ApiHub propagation delay). `handleResponse()` checked `consent_required` before `awaitingPostConsentRetry`, so it re-showed the consent banner. User clicked "I've completed" without re-opening the NEW consent link → infinite loop (6+ times) until agent gave up.
+**Root cause:** ApiHub takes a few seconds to propagate tokens after consent completion. The chat app had no tolerance for this delay — any `consent_required` after consent showed the banner again.
+**Fix:** In `handleResponse()`, when `awaitingPostConsentRetry` is true and we get `consent_required`, silently wait 3 seconds and retry (up to 4 times) instead of re-showing the banner. Only re-show if all poll retries are exhausted.
+**Rule:** After OAuth consent completion, always add a poll-and-retry loop before re-showing consent UI. ApiHub needs a few seconds to propagate tokens. The user completing consent once should be enough — the app must absorb the delay.
+
+### 2026-02-27 — ApiHub does NOT auto-refresh OAuth tokens (conclusively proven)
+**Finding:** ApiHub never refreshes tokens for RemoteTool/GenericProtocol connections. Proven via diagnostic test with 10-minute SF token TTL.
+**Evidence (JWT-level proof):**
+- Successful call at 21:08 UTC and failed call at 21:18 UTC sent the **byte-identical JWT** (same `iat`, `exp`, signature)
+- JWT claims: `iat=21:05:01`, `exp=21:15:01` (10min TTL). Token expired at 21:15:01.
+- At 21:18:52 (3m51s past expiry), ApiHub provided the same expired token to Foundry — no proactive `exp` check
+- At 21:20:07 (5m6s past expiry), second call — still the same expired token, no refresh between failures
+- SF login history: **zero entries** after consent — no `grant_type=refresh_token` POST to `/services/oauth2/token`
+- SF returned `INVALID_JWT_FORMAT` / `INVALID_AUTH_HEADER` (how SF rejects expired JWTs)
+**What doesn't work:**
+1. Proactive refresh (checking `exp` before providing token) — expired tokens ARE sent
+2. Reactive refresh (401 → refresh → retry) — no refresh after receiving 401
+3. `refreshUrl` in connection config — accepted but never called
+**Diagnostic setup:** Removed APIM `validate-jwt` so requests flow through to SF. MCP server raises `SalesforceAuthError` on 401 (but FastMCP catches exceptions in tool handlers before middleware — see lesson below).
+**Rule:** ApiHub's `refreshUrl` is non-functional for RemoteTool connections. Token expiry ALWAYS requires re-authentication. Design the UX accordingly.
+
+### 2026-02-27 — FastMCP catches tool exceptions before ASGI middleware
+**Mistake:** Added `SalesforceAuthError` (not a subclass of `httpx.HTTPStatusError`) to bypass MCP tool error handlers and propagate to `BearerTokenMiddleware`. Expected the middleware to catch it and return raw HTTP 401. Instead, FastMCP's internal tool execution wrapper caught it first and returned it as `Error executing tool ...: (401, b'...')` inside an HTTP 200 MCP tool result.
+**Root cause:** FastMCP wraps ALL tool handler calls in a try/except that catches any `Exception` and returns it as a tool error string. The exception never reaches the ASGI middleware layer because FastMCP catches it at the MCP protocol level.
+**Call chain:** `HTTP request → Middleware → FastMCP router → tool handler → raises SalesforceAuthError → FastMCP catches here (HTTP 200 with error string) → middleware never sees it`
+**Rule:** ASGI middleware cannot catch exceptions raised inside MCP tool handlers — FastMCP intercepts them first. To return non-200 HTTP responses from tool-level errors, the tool handler itself must explicitly return an HTTP error response, or a custom MCP transport/router must be used.
+
+### 2026-02-27 — SF `INVALID_JWT_FORMAT` / `INVALID_AUTH_HEADER` for expired JWT tokens
+**Finding:** When a Salesforce JWT-format access token (Core Token Encryption) has a valid signature but an expired `exp` claim, SF returns `[{"message":"INVALID_JWT_FORMAT","errorCode":"INVALID_AUTH_HEADER"}]` with HTTP 401. This differs from the traditional `INVALID_SESSION_ID` error returned for opaque session-based tokens.
+**Confirmed from Salesforce:** The request went directly to `orgfarm-*.develop.my.salesforce.com` — not intercepted by APIM (validate-jwt removed). Response format `[{errorCode, message}]` with `content-type: application/json;charset=UTF-8` is standard SF REST API error format.
+**Context:** SF now issues access tokens as signed JWTs (header `tnk: "core/prod/..."`, alg RS256). SF validates the JWT `exp` claim server-side and returns `INVALID_JWT_FORMAT` when expired — the name is misleading since the format is valid, only the `exp` is past.
+**Rule:** `INVALID_JWT_FORMAT` + `INVALID_AUTH_HEADER` from SF = expired JWT access token (not structurally malformed). Check the `exp` claim in the JWT payload to confirm. This is different from `INVALID_SESSION_ID` which applies to older opaque session tokens.
+
+### 2026-02-27 — Don't run interactive scripts from Claude Code Bash tool
+**Mistake:** Ran `test-reauth-flow.py` (which uses `input()` for Phase 4) from Claude Code's Bash tool. The script crashed with `EOFError` at the interactive prompt, leaving tokens in a wiped state each time.
+**Root cause:** Claude Code's Bash tool runs non-interactively — `stdin` is closed, so `input()` raises `EOFError`.
+**Rule:** Never run scripts with `input()` or other interactive stdin from Claude Code. For test scripts with interactive steps, either: (a) split into non-interactive + interactive parts, (b) have the user run from their own terminal, or (c) just do the ARM manipulation directly and let the user test through the UI.
+
 <!-- Example format:
 ### YYYY-MM-DD — Short title
 **Mistake:** What went wrong
